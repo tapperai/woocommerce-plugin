@@ -33,4 +33,6 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           ZIP="dist/tapper-for-woocommerce-${VERSION}.zip"
           test -f "$ZIP" || { echo "tag $GITHUB_REF_NAME does not match the plugin version" >&2; exit 1; }
-          gh release create "$GITHUB_REF_NAME" "$ZIP" --title "Tapper for WooCommerce ${VERSION}" --notes "See readme.txt for the changelog." || gh release upload "$GITHUB_REF_NAME" "$ZIP" --clobber
+          # The same zip under a fixed name, so https://github.com/<repo>/releases/latest/download/tapper-for-woocommerce.zip always works.
+          cp "$ZIP" dist/tapper-for-woocommerce.zip
+          gh release create "$GITHUB_REF_NAME" "$ZIP" dist/tapper-for-woocommerce.zip --title "Tapper for WooCommerce ${VERSION}" --notes "See readme.txt for the changelog." || gh release upload "$GITHUB_REF_NAME" "$ZIP" dist/tapper-for-woocommerce.zip --clobber

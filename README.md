@@ -6,7 +6,7 @@ Without it a WooCommerce order carries no visitor and no click, and nothing can 
 
 ## Install
 
-1. Download `tapper-for-woocommerce-<version>.zip` from the latest [release](../../releases).
+1. Download [tapper-for-woocommerce.zip](https://github.com/tapperai/woocommerce-plugin/releases/latest/download/tapper-for-woocommerce.zip) (the latest [release](../../releases)).
 2. WordPress admin: Plugins > Add New > Upload Plugin > the zip > Activate.
 3. Settings > Tapper: paste the tracking id (`pk_live_...`).
 4. In Tapper, connect the store from your WooCommerce source.
