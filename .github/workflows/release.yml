@@ -17,6 +17,8 @@ jobs:
           php-version: '8.3'
       - name: Lint
         run: find . -name '*.php' -not -path './dist/*' -print0 | xargs -0 -n1 php -l
+      - name: No internal links or values (public repo)
+        run: bin/scan-internal.sh
       - name: Tests
         run: php tests/run.php
       - name: Build the zip
