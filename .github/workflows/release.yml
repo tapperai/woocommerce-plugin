@@ -5,14 +5,16 @@ on:
   pull_request:
   workflow_dispatch:
 permissions:
-  contents: write
+  contents: read
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: shivammathur/setup-php@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: '8.3'
       - name: Lint
@@ -23,18 +25,32 @@ jobs:
         run: php tests/run.php
       - name: Build the zip
         run: bin/build-zip.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: tapper-for-woocommerce
           path: dist/*.zip
+
+  # The only job with write access: it attaches the zip the build job produced, and runs for version tags only.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: tapper-for-woocommerce
+          path: dist
       - name: Attach to the release
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           ZIP="dist/tapper-for-woocommerce-${VERSION}.zip"
           test -f "$ZIP" || { echo "tag $GITHUB_REF_NAME does not match the plugin version" >&2; exit 1; }
           # The same zip under a fixed name, so https://github.com/<repo>/releases/latest/download/tapper-for-woocommerce.zip always works.
           cp "$ZIP" dist/tapper-for-woocommerce.zip
-          gh release create "$GITHUB_REF_NAME" "$ZIP" dist/tapper-for-woocommerce.zip --title "Tapper for WooCommerce ${VERSION}" --notes "See readme.txt for the changelog." || gh release upload "$GITHUB_REF_NAME" "$ZIP" dist/tapper-for-woocommerce.zip --clobber
+          gh release create "$GITHUB_REF_NAME" "$ZIP" dist/tapper-for-woocommerce.zip -R "$REPO" --title "Tapper for WooCommerce ${VERSION}" --notes "See readme.txt for the changelog." || gh release upload "$GITHUB_REF_NAME" "$ZIP" dist/tapper-for-woocommerce.zip -R "$REPO" --clobber
