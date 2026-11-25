@@ -1,0 +1,121 @@
+# Tests for the WooCommerce plugin: PHP syntax check (`php -l`) on every plugin file, then `php tests/run.php`, which must
+# print "N checks, 0 failed" with N above zero (a renamed or emptied suite fails instead of passing with no checks).
+# A scheduled or manually started run (workflow_dispatch) tests the branch head it was started on. A red scheduled run
+# bisects the branch's recent merges and comments on the pull request that introduced the failure.
+# A dispatch never checks out a commit named by an input.
+# Runs nightly (test-batch.yml) and on a requested workflow_dispatch only.
+name: Tests
+run-name: "Tests ${{ inputs.sha || github.sha }} (${{ inputs.reason || github.event_name }})"
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha: { description: "Commit to test (default: the branch head)", required: false, default: "" }
+      reason: { description: "batch | nightly | requested | on-demand", required: false, default: "on-demand" }
+      mode: { description: "TYPECHECK | AFFECTED | FULL | NONE", required: false, default: "FULL", type: choice, options: [FULL, AFFECTED, TYPECHECK, NONE] }
+      base: { description: "AFFECTED only: the commit the change is measured from (default: the sha's first parent)", required: false, default: "" }
+
+# Least privilege: these jobs only read the repo.
+permissions:
+  contents: read
+
+env:
+  # One definition for the test job and the bisect job (which runs it at older commits).
+  TEST_CMD: |
+    set -eo pipefail
+    find . -name '*.php' -not -path './dist/*' -print0 | xargs -0 -n1 php -l
+    php tests/run.php | tee "${RUNNER_TEMP:-/tmp}/tests-out.txt"
+    grep -qE '^[1-9][0-9]* checks, 0 failed$' "${RUNNER_TEMP:-/tmp}/tests-out.txt"
+
+concurrency:
+  group: tests-${{ inputs.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Unit tests (php)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Do not store the job token in .git/config: the test code must not be able to reuse it.
+          persist-credentials: false
+      - name: Which commit this run tests
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          ASKED: ${{ inputs.sha }}
+        run: |
+          head="$(git rev-parse HEAD)"
+          if [ -n "${ASKED}" ] && [ "${ASKED}" != "${head}" ]; then
+            echo "::notice::Asked for ${ASKED}; this run tests the branch head ${head} (no input-named checkout)."
+          fi
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.3'
+      - name: Run the tests
+        run: bash -c "$TEST_CMD"
+
+  # Skipped under NONE, which GitHub counts as passing. Never rename it.
+  gate:
+    name: CI gate
+    needs: [test]
+    if: ${{ !cancelled() && (inputs.mode || 'FULL') != 'NONE' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: |
+          echo '${{ toJSON(needs) }}' | jq -e 'to_entries | all(.value.result == "success" or .value.result == "skipped")'
+
+  # A red batch or nightly run names the guilty merge (.github/scripts/ci/batch-bisect.sh), re-running the tests at each step.
+  bisect:
+    name: Bisect the batch
+    needs: [test]
+    if: ${{ failure() && github.event_name == 'workflow_dispatch' && (inputs.reason == 'batch' || inputs.reason == 'batch-affected' || inputs.reason == 'nightly') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.3'
+      - name: Bisect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.ref_name }}
+          BAD: ${{ inputs.sha || github.sha }}
+          GOOD: ${{ inputs.reason == 'batch-affected' && inputs.base || '' }}
+          GOOD_FULL_ONLY: ${{ inputs.reason == 'nightly' && '1' || '' }}
+          BISECT_MAX_MERGES: "32"
+          BISECT_BUDGET_MINUTES: "25"
+          BISECT_CMD: ${{ env.TEST_CMD }}
+        run: bash .github/scripts/ci/batch-bisect.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: bisect-result
+          path: bisect-result.json
+          if-no-files-found: ignore
+
+  # Posts the culprit comment from the bisect job's artifact. No checkout, so it never runs merged code.
+  bisect-report:
+    name: bisect report
+    needs: [bisect]
+    if: ${{ !cancelled() && needs.bisect.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions: { pull-requests: write, actions: read }
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { name: bisect-result }
+      - env: { GH_TOKEN: "${{ github.token }}", REPO: "${{ github.repository }}", RUN: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" }
+        run: |
+          pr=$(jq -r '.pr // empty' bisect-result.json); [ "$(jq -r .status bisect-result.json)" = CULPRIT ] && [ -n "$pr" ] || exit 0
+          gh pr comment "$pr" -R "$REPO" --body "The test batch at \`$(jq -r .bad bisect-result.json | cut -c1-12)\` on \`$(jq -r .branch bisect-result.json)\` failed; the bisect names this PR's merge \`$(jq -r .culprit_sha bisect-result.json | cut -c1-12)\` as the first bad commit ($RUN). Nothing was reverted automatically; the maintainers will follow up."
