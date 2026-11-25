@@ -1,0 +1,38 @@
+# Test batch trigger: runs once a night and by hand. It starts tests.yml on the branch head when merges have landed
+# since the last tested commit. Logic: .github/scripts/ci/batch-trigger.sh.
+name: Test batch trigger
+
+on:
+  schedule:
+    - cron: "41 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+  pull-requests: read
+
+concurrency:
+  group: test-batch-trigger-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  count:
+    name: Count merges since the last test batch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout: .github/scripts/ci
+          persist-credentials: false
+      - name: Count, record skips, dispatch tests.yml when due
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_BATCH_SIZE: ${{ vars.CI_BATCH_SIZE || '10' }}
+          CI_BATCH_MIN_INTERVAL_MIN: ${{ vars.CI_BATCH_MIN_INTERVAL_MIN || '60' }}
+          CI_BATCH_MAX: ${{ vars.CI_BATCH_MAX || '32' }}
+          TESTS_WORKFLOW: tests.yml
+        run: bash .github/scripts/ci/batch-trigger.sh
